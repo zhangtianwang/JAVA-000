@@ -1,0 +1,53 @@
+一：相同点：
+    不同的垃圾回收器在不同的内存下的变化趋势大致相同，现以SerialGC举例。
+    1 堆内存越大，YGC开始回收时间逐渐变大。
+        说明堆内存越大，能分配给对象的内存越多，GC回收的启动时间越迟，同时单次回收的内存大，时间也越长。
+    2 YGC次数和FGC次数 内存越大，YGC和FGC次数呈逐渐下降趋势
+       以256M下内存为例：
+		2.1 前8次只进行young区（DefNew）的回收，回收的同时，一部分young代晋升为老年代，old区的内存占用越来越大。
+		2.2 随着老年代内存变大到一定程度，开始进行Full GC回收，如果内存足够大，在一定时间内新对象分配的内存<=堆最大内存-回收内存，则不会进行FullGC回收（即从512M开始FGC次数为0）。
+    3 堆内存变大，对象生成个数呈上升趋势
+	对象个数上升，说明2个问题，一是同一个垃圾回收器，内存大，能提供给更多的对象分配内存，类似池子越大，盛的水越多。 二是serialGC是串行GC，总时间一定的情况下，GC次数变少，GC回收的时间短， 创建对象的时间越长，对象个数越多。
+    4 FullGC比YGC回收时间过长。
+	Full GC在256M内存回收一次real:10ms,20ms, FullGC real:50ms。
+	Full GC花费时间过长，会影响应用的调用时间，尤其是对延迟敏感的调用，所以尽量避免FullGC。
+
+    5 堆内存不足引起的内存溢出
+	在256M内存下，有时间会出现内存溢出，随着对象分配越来越多，产生的新对象分配的内存大于GC回收的内存， 堆内存不足，最终导致内存溢出，导致线程终止。
+
+不同类型GC的特性：
+	1 SerialGC 在256M内存（内存比较小）下，生成的对象个数略高于其他类型的GC，SerialGC是串行GC，相比于并行GC，
+	少了进程切换的开销，分配给GC线程和应用线程的时间就会长一些，分配的对象多一些。。
+
+	2 ParallelGC(并行GC)
+		PSYoungGen(年轻代回收用的ParallelGC)，ParOldGen（老年代回收用的ParalleOldGC）
+		过程分析：以256M为例，GC (Allocation Failure)，首先因为young区没有足够的内存分配失败而导致了MinorGC，Full GC (Ergonomics)  JVM开启了UseAdaptiveSizePolicy 进行了自适应调整导致的Full GC，Full GC 回收内存之后剩下的内存，赶不上新对象分配的速率导致内存溢出。
+	    和SerialGC相比，ParallelGC能利用多核，GC线程和应用线程可以并行执行，吞吐量大，生成的对象多。吞吐量可以通过这2个参数来控制， -XX：MaxGCPauseMillis， -XX：GCTimeRatio。
+
+	3 CMS GC
+		ParNew(年轻代)+CMS（老年代）的组合
+	 ParNew GC 使用标记-复制算法，CMS 使用标记-清除算法，ParNew GC 和 CMS GC可以并行执行。
+		CMS GC 回收分成多个阶段
+			3.1 Initial Mark（初始标记，Stop The World）
+			3.2 Concurrent Mark （并发标记，和应用线程并行执行）
+			3.3 Concurrent Preclean （并发预清理，和应用线程并行执行）
+			3.4 Final Remark （最终标记，Stop The World）
+			3.5 Concurrent Sweep (并发清理，和应用线程并行执行)
+			3.6 Concurrent Reset (并发重置)
+		CMS GC拆成多个阶段，Initial Mark和Final Mark 这个阶段需要暂停用户线程，耗时很短，其他的几个阶段可以和用户线程并行执行，应用线程的响应时间会比较短。并发执行的几个阶段，是会消耗CPU资源的，尤其是CPU少的情况下，会影响用户线程的计算，从数据看，CMS GC的吞吐量比 Parallel GC要小一些。 
+
+	4 G1 GC
+		Garbage First(G1) 垃圾优先GC，可以通过指定-XX：MaxGCPauseMills ，花在GC时间不超过指定的MaxGCPauseMills。
+		G1 GC将堆不再按照固定大小的young和old区进行划分，而是分成大小相同的region,Region也分年轻代和老年代，
+		对应的Region位置不固定，还有一些大的region用来专门存储大对象。
+		从GC日志可以看出，主要包含三个阶段：
+		     4.1 GC pause (G1 Evacuation Pause) (young)，初始阶段对young区进行回收暂停，Young区满了，
+			 回收将存活的对象复制到空的Region。
+		     4.2 统计Region数据，建立数据模型，以达到GC的时间小于设定的MaxGCPauseMills，包括以下几个阶段：
+			4.21 Initial Mark (初始标记阶段) 
+			4.22 Root Region Scan(Root区扫描阶段)
+			4.23 Concurrent Mark(并发标记阶段)
+			4.24 Remark (标记阶段)
+			4.25 cleanup(清理阶段)
+		    4.3 GC pause (G1 Evacuation Pause) (mixed) 混合模式的回收暂停根据4.2积累的数据，在不超过MaxGCPauseMills，
+		    选择合适的Region进行回收。如果old区活对象很少，则会启用young区的回收暂停，所以Mark和mixed之间，会有GC pause (G1 Evacuation Pause) (young)。
