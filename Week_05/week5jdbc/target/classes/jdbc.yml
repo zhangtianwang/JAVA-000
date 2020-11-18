@@ -1,0 +1,5 @@
+jdbc:
+    driver: com.mysql.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/myjdbc?serverTimezone=UTC&useUnicode=true&characterEncoding=utf8
+    user: root
+    password: Zzl,*004312
