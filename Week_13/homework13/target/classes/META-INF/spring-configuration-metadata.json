@@ -1,0 +1,27 @@
+{
+  "groups": [
+    {
+      "name": "kafka",
+      "type": "kafka.ConfigProperties",
+      "sourceType": "kafka.ConfigProperties"
+    }
+  ],
+  "properties": [
+    {
+      "name": "kafka.broker-address",
+      "type": "java.lang.String",
+      "sourceType": "kafka.ConfigProperties"
+    },
+    {
+      "name": "kafka.foo-topic",
+      "type": "java.lang.String",
+      "sourceType": "kafka.ConfigProperties"
+    },
+    {
+      "name": "kafka.topic",
+      "type": "java.lang.String",
+      "sourceType": "kafka.ConfigProperties"
+    }
+  ],
+  "hints": []
+}

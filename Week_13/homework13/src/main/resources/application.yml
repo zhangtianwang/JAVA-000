@@ -1,0 +1,7 @@
+kafka:
+  brokerAddress: 10.6.1.49:9092,10.6.1.49:9093,10.6.1.49:9094
+  topic: my-topic
+  fooTopic: my-fooTopic
+spring:
+  jmx:
+    enabled: false
