@@ -4,7 +4,7 @@
 
  1 zookeeper 单服务器集群的安装
 
-   见配置文件 zookeeper/zoo.cfg
+   见配置文件 zoo.cfg
 
    配置参数：
    dataDir=/data1/soft/zookeeper/zookeeper1/data
@@ -18,11 +18,5 @@
 
 2 activemq 单服务器集群的安装
   
-   配置文件：activemq/activemq.xml 和 activemq/jetty.xml
-
-3 kafka 集群安装
-   配置文件见： kafka/server.perperties	
-
-
-
+   配置文件：
   
