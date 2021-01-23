@@ -1,61 +1,55 @@
-# 一：zookeeper简介及安装 #
+# 一：nacos简介及安装 #
 
 ----------
 
-	# zookeeper简介 #
-   zookeper的[官方文档](https://zookeeper.apache.org/ "官方文档地址")对zookeeper的
-功能做了描述：zookeeper是一个分布式的协调服务，提供配置中心,域名命名，分布式同步，组服务等，在分布式系统中，微服务很多，服务管理比较困难，比如服务节点的故障，服务节点的新增，
-zookeeper来管理实现服务的高可用。	
 
-    # zookeeper的安装 # 
-	    zookeeper的安装也比较简单，找一个最新的版本的zookeeper的包，比如下载zookeeper-release-3.6.2.tar，下载之后，找到bin下面的zkServer.cmd，然后双击，
-    	zookeeper启动成功。
+	# nacos简介 #
+	
+	Nacos 致力于发现、配置和管理微服务,提供了一组简单易用的特性集，帮助您快速实现动态服务发现、服务配置、服务元数据及流量管理。
+
+
+    # nacos的安装 # 
+	    下载nacos-server-1.1.4.zip，下载之后，解压，然后双击startup.cmd，
+    	启动成功。
+		然后访问： http://127.0.0.1:8848/nacos/index.html，进入到nacos的管理后台。
 	
 
 ----------
 	
 
-# 二：soul集成zookeeper进行数据同步 #
+# 二：soul如何集成nacos进行数据同步 #
 
 ----------
 
 	
 
- soul-admin项目配置文件application.yml，关掉websocket的默认配置，开启zookeeper的配置
+ soul-admin和soul-bootstrap配置文件引入nacos的配置
     
- > 	soul:  
-> 	  sync:  
->         zookeeper:
->           url: localhost:2181  
->           sessionTimeout: 5000  
->           connectionTimeout: 2000
+	 nacos:
+      url: localhost:8848
+      namespace: 1c10d748-af86-43b9-8265-75f487d20c6c
+      acm:
+        enabled: false
+        endpoint: acm.aliyun.com
+        namespace:
+        accessKey:
+        secretKey:
 
-  soul-bootstrap项目引入依赖包
-	>  <dependency>
->       <groupId>org.dromara</groupId>
->        <artifactId>soul-spring-boot-starter-sync-data-zookeeper</artifactId>
->        <version></version>
->      </dependency>
+  soul-admin和soul-bootstrap项目引入依赖包
+    
+	 <dependency>
+            <groupId>com.alibaba.nacos</groupId>
+            <artifactId>nacos-client</artifactId>
+            <version>${nacos-client.version}</version>
+        </dependency>
  
+  分别启动soul-admin，soul-bootstrap，项目启动成功。
   
-  soul-bootstrap项目引入依赖包    
-	 
-> 	soul:  
-> 	  sync:  
->         zookeeper:
->           url: localhost:2181  
->           sessionTimeout: 5000  
->           connectionTimeout: 2000
- 
-
-启动soul-admin，启动成功
-启动soul-bootstrap，启动成功。
-
- 
+	
 
 ----------
 
-# 三：zookeeper数据同步流程源码分析 #
+# 三：nacos数据同步流程源码分析 #
 
 ----------
  
@@ -65,20 +59,33 @@ zookeeper来管理实现服务的高可用。
 > 		      
  # soul-admin项目推送数据到zookeeper： 
 		
-		1 首先我们找到这个注入DataSyncConfiguration类下注入ZookeeperDataInit的Bean的方法，发现依赖于先把ZkClient和DataSyncConfiguration注入到容器。
-		@Bean
-        @ConditionalOnMissingBean(ZookeeperDataInit.class)
-        public ZookeeperDataInit zookeeperDataInit(final ZkClient zkClient, final SyncDataService syncDataService) {
-            return new ZookeeperDataInit(zkClient, syncDataService);
-        }
-
-		2 通过查找引用的方式，我们找到了ZookeeperConfiguration类的注入ZkClient的方法，因为配置文件中有zookeeper的配置，所以ZookeeperProperties已经被注入到容器，ZK也可注入到容器
-
-	@Bean
-    @ConditionalOnMissingBean(ZkClient.class)
-    public ZkClient zkClient(final ZookeeperProperties zookeeperProp) {
-        return new ZkClient(zookeeperProp.getUrl(), zookeeperProp.getSessionTimeout(), zookeeperProp.getConnectionTimeout());
+		1 首先定位到NacosSyncDataService注入到Spring容器的SynDataService的Bean.
+		 @Bean
+    public SyncDataService nacosSyncDataService(final ObjectProvider<ConfigServiceconfigService, final ObjectProvider<PluginDataSubscriberpluginSubscriber,
+                                           final ObjectProvider<List<MetaDataSubscriber>metaSubscribers, final ObjectProvider<List<AuthDataSubscriber>authSubscribers) {
+        log.info("you use nacos sync soul data.......");
+        return new NacosSyncDataService(configService.getIfAvailable(), pluginSubscriber.getIfAvailable(),
+                metaSubscribers.getIfAvailable(Collections::emptyList), authSubscribers.getIfAvailable(Collections::emptyList));
     }
+
+----------
+
+	 2 我们进一步进入NacosSyncDataService的构造方法，内部执行了start方法
+
+	 public NacosSyncDataService(final ConfigService configService, final PluginDataSubscriber pluginDataSubscriber,
+                                final List<MetaDataSubscriber> metaDataSubscribers, final List<AuthDataSubscriber> authDataSubscribers) {
+        start();
+    }
+    public void start() {
+        watcherData(PLUGIN_DATA_ID, this::updatePluginMap);
+        watcherData(SELECTOR_DATA_ID, this::updateSelectorMap);
+        watcherData(RULE_DATA_ID, this::updateRuleMap);
+        watcherData(META_DATA_ID, this::updateMetaDataMap);
+        watcherData(AUTH_DATA_ID, this::updateAuthMap);
+    }
+
+----------
+	3 我们
    	
 	     3 我们再找Zookeeper依赖注入的SyncDataService，猜测是不是有Zookeeper实现的SyncDataService，注入到容器了，果然我们找到了ZookeeperSyncDataService，
 		 @Bean
