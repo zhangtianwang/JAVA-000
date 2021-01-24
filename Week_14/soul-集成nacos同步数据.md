@@ -53,29 +53,105 @@
 
 ----------
  
-> 大体的流程：1 soul-admin启动——》全量推送配置数据到zookeeper。  
-> 		    2 soul-bootstrap启动——》从zookeeper拉取数据到读取到soul-bootstrapd的内存。  
+> 大体的流程：1 soul-admin同步数据到nacos的  
+> 		    2 soul-bootstrap启动——》nacosr拉取数据到读取到本地缓存。  
 > 		    3 客户调用——》请求到soul-bootstrap，boot-strap从内存中获取到配置数据
 > 		      
- # soul-admin项目推送数据到zookeeper： 
+ # soul-admin项目推送数据到nacos： 
 		
-		1 首先定位到NacosSyncDataService注入到Spring容器的SynDataService的Bean.
-		 @Bean
-    public SyncDataService nacosSyncDataService(final ObjectProvider<ConfigServiceconfigService, final ObjectProvider<PluginDataSubscriberpluginSubscriber,
-                                           final ObjectProvider<List<MetaDataSubscriber>metaSubscribers, final ObjectProvider<List<AuthDataSubscriber>authSubscribers) {
+		1 update一条rule数据，会把rule更新到数据库，同时publishEvent
+	 	private void publishEvent(final RuleDO ruleDO, final    List<RuleConditionDTO> ruleConditions) {
+              ...
+              eventPublisher.publishEvent(new DataChangedEvent(ConfigGroupEnum.RULE, DataEventTypeEnum.UPDATE,
+                Collections.singletonList(RuleDO.transFrom(ruleDO, pluginDO.getName(), conditionDataList))));
+    }
+
+----------
+
+	 2 NacosDataChangedListener 实现了DataChangedListener,同时开始了nacos的配置，
+	 项目启动时，会把NacosDataChangedListener注入到容器，由于DataChangedListener实现了ApplicationListener, 监听到Spring的publishEvent事件
+
+	 public void onApplicationEvent(final DataChangedEvent event) {
+        for (DataChangedListener listener : listeners) {
+            switch (event.getGroupKey()) {
+                ...
+                case RULE:
+					//开始调用NacosDataChangedListener的onRuleChanged方法
+                    listener.onRuleChanged((List<RuleData>) event.getSource(), event.getEventType());
+                    break;
+			}
+	   }
+    
+
+----------
+	3 NacosDataChangeListener类 做了两个事，一个是更新到本地缓存，另一个是把配置发布出去。
+	public void onRuleChanged(final List<RuleData> changed, final DataEventTypeEnum eventType) {
+		//更新到本地缓存
+        updateRuleMap(getConfig(RULE_DATA_ID));
+		//发布配置
+        publishConfig(RULE_DATA_ID, RULE_MAP);
+    }
+	
+	
+
+----------
+	4 NacosConfigService 类最终是调用封装类，组装参数，通过http调用将参数信息发布到nacos
+	private boolean publishConfigInner(String tenant, String dataId, String group, String tag, String appName, String betaIps, String content) throws NacosException {
+        //拼装参数和地址
+        content = cr.getContent();
+        String url = "/v1/cs/configs";
+        List<String> params = new ArrayList();
+        params.add("dataId");
+        params.add(dataId);
+        params.add("group");
+        params.add(group);
+        params.add("content");
+        params.add(content);
+        ...
+
+        try {
+			//走接口调用将，参数信息提交到nacos配置中心
+            result = this.agent.httpPost(url, headers, params, this.encode, 3000L);
+        } catch (IOException var14) {
+          
+        }
+		结果处理
+		....
+       
+    }
+
+
+	至此，通过跟踪代码，把数据发布到了nacos的配置中心
+
+----------
+	
+	
+# soul-bootsrap从Nacos拉取配置数据，并监控后台数据的变化缓存数据同步更新
+	
+> soul-bootstrap项目引入soul-spring-boot-starter-sync-data-nacos，找到  NacosSyncDataConfiguration这个核心配置类，soul-bootstrap启动，会把NacosSyncDataConfiguration下的nacosSyncDataService注入到容器，调用NacosSyncDataService的改造函数
+
+    @Bean
+    public SyncDataService nacosSyncDataService(final ObjectProvider<ConfigService> configService, final ObjectProvider<PluginDataSubscriber> pluginSubscriber,final ObjectProvider<List<MetaDataSubscriber>> metaSubscribers, final ObjectProvider<List<AuthDataSubscriber>> authSubscribers) {
         log.info("you use nacos sync soul data.......");
         return new NacosSyncDataService(configService.getIfAvailable(), pluginSubscriber.getIfAvailable(),
                 metaSubscribers.getIfAvailable(Collections::emptyList), authSubscribers.getIfAvailable(Collections::emptyList));
     }
 
+    
+
 ----------
-
-	 2 我们进一步进入NacosSyncDataService的构造方法，内部执行了start方法
-
-	 public NacosSyncDataService(final ConfigService configService, final PluginDataSubscriber pluginDataSubscriber,
+	NacosSyncDataService构造函数进行初始化，进入start函数，watcherData方法是核心的
+	方法
+	public NacosSyncDataService(final ConfigService configService, final PluginDataSubscriber pluginDataSubscriber,
                                 final List<MetaDataSubscriber> metaDataSubscribers, final List<AuthDataSubscriber> authDataSubscribers) {
+
+        super(configService, pluginDataSubscriber, metaDataSubscribers, authDataSubscribers);
         start();
     }
+
+    /**
+     * Start.
+     */
     public void start() {
         watcherData(PLUGIN_DATA_ID, this::updatePluginMap);
         watcherData(SELECTOR_DATA_ID, this::updateSelectorMap);
@@ -85,155 +161,52 @@
     }
 
 ----------
-	3 我们
-   	
-	     3 我们再找Zookeeper依赖注入的SyncDataService，猜测是不是有Zookeeper实现的SyncDataService，注入到容器了，果然我们找到了ZookeeperSyncDataService，
-		 @Bean
-    public SyncDataService syncDataService(final ObjectProvider<ZkClient> zkClient, final ObjectProvider<PluginDataSubscriber> pluginSubscriber,
-                                           final ObjectProvider<List<MetaDataSubscriber>> metaSubscribers, final ObjectProvider<List<AuthDataSubscriber>> authSubscribers) {
-        return new ZookeeperSyncDataService(zkClient.getIfAvailable(), pluginSubscriber.getIfAvailable(),
-                metaSubscribers.getIfAvailable(Collections::emptyList), authSubscribers.getIfAvailable(Collections::emptyList));
-     }
-		4 ZookeeperDataInit已经初始化完成，接下来我们看下如何同步的数据，ZookeeperDataInit方法实现了CommondLineRunner,spring容器初始化中，会执行run方法，即同步数据的方法。
-	> public class ZookeeperDataInit implements CommandLineRunner
-	 @Override
-    public void run(final String... args) {
-        String pluginPath = ZkPathConstants.PLUGIN_PARENT;
-        String authPath = ZkPathConstants.APP_AUTH_PARENT;
-        String metaDataPath = ZkPathConstants.META_DATA;
-        if (!zkClient.exists(pluginPath) && !zkClient.exists(authPath) && !zkClient.exists(metaDataPath)) {
-            syncDataService.syncAll(DataEventTypeEnum.REFRESH);
-        }
-    }
-		
-	 我们再进一步看下synAll的实现方法：
-	@Override
-    public boolean syncAll(final DataEventTypeEnum type) {
-        List<PluginData> pluginDataList = pluginService.listAll();
-        eventPublisher.publishEvent(new DataChangedEvent(ConfigGroupEnum.PLUGIN, type, pluginDataList));
-        ...
-    }
-
-	eventPublisher执行了publishEvent，定位到DataChangedEventDispatcher实现了ApplicationListener，用onApplicationEvent监听到事件，进行处理
-	
-
-	public void onApplicationEvent(final DataChangedEvent event) {
-        for (DataChangedListener listener : listeners) {
-            switch (event.getGroupKey()) {
-                case APP_AUTH:
-                    listener.onAppAuthChanged((List<AppAuthData>) event.getSource(), event.getEventType());
-                    break;
-               ......
+	然后我们进入watcherData方法，首先创建了一个listener对象，receiveConfigInfo方法接收
+	change事件，执行 this::updateRuleMap 这个方法。
+	 protected void watcherData(final String dataId, final OnChange oc) {
+        Listener listener = new Listener() {
+            @Override
+            public void receiveConfigInfo(final String configInfo) {
+                oc.change(configInfo);
             }
-        }
-    }
-	
-	我们开始了Zookeeper的配置，从容器中拿到listener是ZookeeperDataChangedListener，
-	进入到这个类，这个是核心类，获取到zk的path，往zk里去同步数据。
-	 public void onPluginChanged(final List<PluginData> changed, final DataEventTypeEnum eventType) {
-        for (PluginData data : changed) {
-			
-            final String pluginPath = ZkPathConstants.buildPluginPat
-            upsertZkNode(pluginPath, data);
-			....
-        }
-    }
 
-	至此，soul-admin里面往zk同步数据代码就到这里
-
-----------
-	
-	
-# soul-bootsrap从zookeeper拉取配置信息加载到缓存
-	
-> soul-bootstrap项目引入soul-spring-boot-starter-sync-data-zookeeper，我们找到这个项目的源码，找到ZookeeperSyncDataConfiguration这个核心配置类，
-
-    @Bean
-    public SyncDataService syncDataService(final ObjectProvider<ZkClientzkClient, final ObjectProvider<PluginDataSubscriberpluginSubscriber,
-       final ObjectProvider<List<MetaDataSubscriber>metaSubscribers, final ObjectProvider<List<AuthDataSubscriber>authSubscribers) {
-    log.info("you use zookeeper sync soul data.......");    
-    return new ZookeeperSyncDataService(zkClient.getIfAvailable(),    pluginSubscriber.getIfAvailable(),
-    metaSubscribers.getIfAvailable(Collections::emptyList), authSubscribers.getIfAvailable(Collections::emptyList));
-    }
-    
-
-----------
-	
-从日志可以看出这是开始用zookeeper同步数据。进入到实例话方法：
-
-
-     public ZookeeperSyncDataService(final ZkClient zkClient, final PluginDataSubscriber pluginDataSubscriber,
-                                    final List<MetaDataSubscriber> metaDataSubscribers, final List<AuthDataSubscriber> authDataSubscribers) {
-        this.zkClient = zkClient;
-        this.pluginDataSubscriber = pluginDataSubscriber;
-        this.metaDataSubscribers = metaDataSubscribers;
-        this.authDataSubscribers = authDataSubscribers;
-        watcherData();
-        watchAppAuth();
-        watchMetaData();
-    }
-
-----------
-	然后我们进入watcherData方法内部
-	 private void watcherData() {
-        final String pluginParent = ZkPathConstants.PLUGIN_PARENT;
-        List<String> pluginZKs = zkClientGetChildren(pluginParent);
-        for (String pluginName : pluginZKs) {
-			//获取到数据，将数据写入缓存
-            watcherAll(pluginName);
-        }
-        zkClient.subscribeChildChanges(pluginParent, (parentPath, currentChildren) -> {
-            if (CollectionUtils.isNotEmpty(currentChildren)) {
-                for (String pluginName : currentChildren) {
-                    watcherAll(pluginName);
-                }
+            @Override
+            public Executor getExecutor() {
+                return null;
             }
-        });
-    }
-	进入到watchAll方法：
-	private void watcherAll(final String pluginName) {
-        watcherPlugin(pluginName);
-        watcherSelector(pluginName);
-        watcherRule(pluginName);
-    }
-	然后进入到一种的监控plugin方法，这个是核心的方法，
-	private void watcherPlugin(final String pluginName) {
-        String pluginPath = ZkPathConstants.buildPluginPath(pluginName);
-        if (!zkClient.exists(pluginPath)) {
-            zkClient.createPersistent(pluginPath, true);
-        }
-		//写入缓存数据
-        cachePluginData(zkClient.readData(pluginPath));
-        subscribePluginDataChanges(pluginPath, pluginName);
-    }
-	
-	//可以看到把数据写入了本地的缓存PLUGIN_MAP，是一个Map。
-	public void cachePluginData(final PluginData pluginData) {
-        Optional.ofNullable(pluginData).ifPresent(data -> PLUGIN_MAP.put(data.getName(), data));
+        };
+        oc.change(getConfigAndSignListener(dataId, listener));
+        LISTENERS.getOrDefault(dataId, new ArrayList<>()).add(listener);
     }
 	
 
 ----------
 
-	//接下来我们看下接口调用soul-bootstrap网关，调用到AbstractPlugin, 从缓存中取数据，取不到的话，直接返回
+	//接下来我们看下updateRuleMap这个方法，方法里面先执行了删除缓存，后重新写入本地缓存。
 
-	public Mono<Void> execute(final ServerWebExchange exchange, final SoulPluginChain chain) {
-        String pluginName = named();
-		//从缓存中取数据，不做处理直接返回。
-        final PluginData pluginData = BaseDataCache.getInstance().obtainPluginData(pluginName);
-        if (pluginData != null && pluginData.getEnabled()) {
-            final Collection<SelectorData> selectors = BaseDataCache.getInstance().obtainSelectorData(pluginName);
-            if (CollectionUtils.isEmpty(selectors)) {
-                return handleSelectorIsNull(pluginName, exchange, chain);
-            }
+	protected void updateRuleMap(final String configInfo) {
+        try {
+            List<RuleData> ruleDataList = GsonUtils.getInstance().toObjectMapList(configInfo, RuleData.class).values()
+                    .stream().flatMap(Collection::stream)
+                    .collect(Collectors.toList());
+            ruleDataList.forEach(ruleData -> Optional.ofNullable(pluginDataSubscriber).ifPresent(subscriber -> {
+				//删除缓存
+                subscriber.unRuleSubscribe(ruleData);
+				//更新缓存
+                subscriber.onRuleSubscribe(ruleData);
+            }));
+        } catch (JsonParseException e) {
+            log.error("sync rule data have error:", e);
+        }
+    }
      
 ----------
 
 	
 
-	从源码的跟踪，追溯了初始化soul-admin怎么把数据写入到zookeeper，soul-bootstrap项目启动
-	从zookeeper从读取数据，加载到自己内存的过程。
-	soul-admin增删改配置数据之后，soul-bootstrap数据及时生效的数据同步，也基本一致，这里我们不再赘述。
+	从源码的跟踪，追溯了初始化soul-admin怎么把数据写入到nacos，soul-bootstrap项目启动
+	从nacos从读取数据，加载到自己内存的过程。
+	
 	
     
 
